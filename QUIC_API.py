@@ -1,12 +1,14 @@
 from socket import *
 import ssl
-
+import os
+import uuid
 
 """
 This class represents the QUIC API.
 It includes the functions to establish the connection, send and receive data, and close the connection.
 The class also includes the functions to handle packet loss and recovery mechanism.
 """
+
 
 class QUICPacket:
     def __init__(self, packet_number, frames, long_header=None, short_header=None):
@@ -38,6 +40,22 @@ class QUICFrame:
         self.frame_type = frame_type
         self.data = data
 
+"""
+This class generates unique IDs for the clients and the servers.
+It generates a 16-bit ID for each client and server.
+Each ID is unique and is not used by any other client or server.
+"""
+class IDGenerator:
+    def __init__(self):
+        self.used_ids = set()
+
+    def generate_id(self):
+        while True:
+            new_id = uuid.uuid4().int & (1 << 16) - 1
+            if new_id not in self.used_ids:
+                self.used_ids.add(new_id)
+                return new_id
+
 
 class QUIC_API:
     # Singleton class to have only one active stream at a time.
@@ -64,9 +82,10 @@ class QUIC_API:
     Parameters:
     ip(String): The IP address of the server.
     port(int): The port number of the server.
+    client_id(int): The client ID.
     
     Returns:
-    int: 0 if the connection is established successfully, -1 otherwise.
+    int: 1 if the connection is established successfully, -1 otherwise.
     """
 
     def QUIC_connect(self, ip, port, client_id):
@@ -90,17 +109,34 @@ class QUIC_API:
             # Perform a TLS 1.3 handshake to establish the shared secret
             self.tls_handshake_client()
 
-
     """
     This function accepts the connection from the client.
     It accepts the connection request from the client according to the QUIC protocol handshake.
     
     Returns:
-    int: 0 if the connection is accepted successfully, -1 otherwise.
+    int: A new QUIC socket that is connected to the client if the connection is accepted successfully, -1 otherwise.
     """
 
     def QUIC_accept_connection(self, server_id):
-        pass
+        # Receive the initial packet from the client
+        initial_packet, client_address = self.socket_fd.recvfrom(2048)
+
+        # Verify the client's address and the client ID in the Initial packet
+        if client_address == self.client_address and initial_packet.frames[0].data == server_id:
+            # Generate a token and include it in the Retry packet
+            token = self.generate_token()
+            retry_packet = QUICPacket(0, [QUICFrame("token", token)])
+            self.socket_fd.sendto(retry_packet, client_address)
+
+            # Receive the new Initial packet from the client
+            new_initial_packet, client_address = self.socket_fd.recvfrom(2048)
+
+            # Perform a TLS 1.3 handshake to establish the shared secret
+            self.tls_handshake_server()
+            # Return a new QUIC socket that is connected to the client
+            return QUIC_API(self.socket_fd, self.server_address, client_address)
+
+
 
     """
     This function sends data from one peer to another.
@@ -203,6 +239,15 @@ class QUIC_API:
         else:
             return 0
 
+    def generate_random_file(filename, size):
+        """
+        Generate a file with random content.
 
+        :param filename: Name of the file to be created.
+        :param size: Size of the file in bytes.
+        """
+        with open(filename, 'wb') as f:
+            f.write(os.urandom(size))
 
-
+    # Usage:
+    # generate_random_file('random_file.txt', 1024)  # Creates a file with 1024 random bytes

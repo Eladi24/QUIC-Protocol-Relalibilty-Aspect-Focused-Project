@@ -1,5 +1,9 @@
-# Description: This file contains the QUIC server class.
+import uuid
 
+from QUIC_API import IDGenerator
+
+
+# Description: This file contains the QUIC server class.
 # This class is representing the QUIC server.
 # The stages of starting the server, accepting the connection from the client and sending a large file to the client are as follows:
 # 1. Create a QUIC configuration object.
@@ -14,3 +18,5 @@ class Server:
         self.server_address = server_address
         self.server_port = server_port
         self.stream = None
+        # 16-bit server ID
+        self.server_id = IDGenerator().generate_id()
