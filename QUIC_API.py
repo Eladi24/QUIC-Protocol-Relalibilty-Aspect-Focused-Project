@@ -2,6 +2,7 @@ from socket import *
 import ssl
 import os
 import uuid
+import hashlib
 
 """
 This class represents the QUIC API.
@@ -57,22 +58,29 @@ class IDGenerator:
                 return new_id
 
 
-class QUIC_API:
+class QUIC_STREAM:
     # Singleton class to have only one active stream at a time.
-    _instance = None
+    _stream = None
 
-    def __new__(cls, socket_fd, server_address, client_address):
-        if cls._instance is None:
-            cls._instance = super(QUIC_API, cls).__new__(cls)
-            cls._instance.protocol = None
-            cls._instance.stream_id = 0
-        return cls._instance
+    def __new__(cls, socket_fd, server_address, client_address, is_client: False, peer_id):
+        if cls._stream is None:
+            cls._stream = super(QUIC_STREAM, cls).__new__(cls)
+            cls._stream.protocol = None
+            cls._stream.stream_id = 0
+        return cls._stream
 
-    def __init__(self, socket_fd, server_address: None, client_address: None):
+    def __init__(self, socket_fd, server_address: None, client_address: None, is_client: False, peer_id):
         self.socket_fd = socket_fd
         self.server_address = server_address
         self.client_address = client_address
+        self.is_client = is_client
         self.connection_id = 0
+        if is_client:
+            self.QUIC_connect(server_address, client_address, peer_id)
+        else:
+            self.QUIC_accept_connection(peer_id)
+
+
 
     """
     This function establishes the connection with the server.
@@ -109,20 +117,30 @@ class QUIC_API:
             # Perform a TLS 1.3 handshake to establish the shared secret
             self.tls_handshake_client()
 
+
+
+
+
     """
     This function accepts the connection from the client.
     It accepts the connection request from the client according to the QUIC protocol handshake.
     
     Returns:
-    int: A new QUIC socket that is connected to the client if the connection is accepted successfully, -1 otherwise.
+    int: 1 if the connection is accepted successfully, -1 otherwise.
     """
 
     def QUIC_accept_connection(self, server_id):
         # Receive the initial packet from the client
         initial_packet, client_address = self.socket_fd.recvfrom(2048)
 
-        # Verify the client's address and the client ID in the Initial packet
-        if client_address == self.client_address and initial_packet.frames[0].data == server_id:
+        # Extract the client ID from the Initial packet
+        client_id = initial_packet.frames[0].data
+
+        # Generate a CID by combining the client ID and server ID
+        cid = self.generate_connection_id(client_id, server_id)
+
+        # If the client's address is as expected, proceed with the connection
+        if client_address == self.client_address:
             # Generate a token and include it in the Retry packet
             token = self.generate_token()
             retry_packet = QUICPacket(0, [QUICFrame("token", token)])
@@ -133,10 +151,11 @@ class QUIC_API:
 
             # Perform a TLS 1.3 handshake to establish the shared secret
             self.tls_handshake_server()
-            # Return a new QUIC socket that is connected to the client
-            return QUIC_API(self.socket_fd, self.server_address, client_address)
 
-
+            # Store the CID for this connection
+            self.connection_id = cid
+        else:
+            raise Exception("Client address does not match expected address")
 
     """
     This function sends data from one peer to another.
@@ -161,7 +180,30 @@ class QUIC_API:
     """
 
     def QUIC_receive_data(self):
-        pass
+        # Receive a packet from the sender
+        packet, sender_address = self.socket_fd.recvfrom(2048)
+        # If the address has changed but the CID is the same, this is a potential connection migration
+        if sender_address != self.client_address and packet.cid == self.connection_id:
+            # Send a PATH_CHALLENGE packet to the new address
+            self.send_path_challenge(sender_address)
+            # Receive a PATH_RESPONSE packet from the new address
+
+    def send_path_challenge(self, new_address):
+        # Generate a random payload
+        payload = os.urandom(8)
+        # Create a PATH_CHALLENGE frame with the payload
+        frame = QUICFrame("PATH_CHALLENGE", payload)
+        # Send the frame to the new address
+        self.socket_fd.sendto(frame, new_address)
+        # Store the payload for later verification
+        self.path_challenge_payload = payload
+
+    def handle_path_response(self, frame):
+        # If the PATH_RESPONSE payload matches the PATH_CHALLENGE payload, this confirms the new address
+        if frame.data == self.path_challenge_payload:
+            # Update the client address to the new address
+            self.client_address = frame.address
+
 
     """
     This function closes the connection between the two peers.
@@ -205,12 +247,21 @@ class QUIC_API:
     """
 
     def generate_connection_id(self, client_id, server_id):
-        pass
+        # Concatenate the client ID and the server ID
+        combined_id = str(client_id) + str(server_id)
+        # Hash the combined ID to create a unique connection ID
+        connection_id = hashlib.sha256(combined_id.encode()).hexdigest()
+        return connection_id
 
     def tls_handshake_client(self):
         try:
             # Create a new SSL context
             context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+
+            # Specify the minimum version of TLS
+            context.options |= ssl.OP_NO_TLSv1
+            context.options |= ssl.OP_NO_TLSv1_1
+
             # Use the context to establish a TLS session
             with context.wrap_socket(self.socket_fd, server_hostname=self.server_address) as secured_sock:
                 # Display the TLS version used
@@ -224,6 +275,11 @@ class QUIC_API:
         try:
             # Create a new SSL context
             context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+
+            # Specify the minimum version of TLS
+            context.options |= ssl.OP_NO_TLSv1
+            context.options |= ssl.OP_NO_TLSv1_1
+
             # Use the context to establish a TLS session
             with context.wrap_socket(self.socket_fd, server_side=True) as secured_sock:
                 # Display the TLS version used
@@ -248,6 +304,13 @@ class QUIC_API:
         """
         with open(filename, 'wb') as f:
             f.write(os.urandom(size))
+    """
+    Generate a token for address validation. 
+    This could be any data structure or value that the server can recognize when the client sends it back.
+    For simplicity, we'll use a random 16-byte string.
+    """
+    def generate_token(self):
+        return os.urandom(16)
 
     # Usage:
     # generate_random_file('random_file.txt', 1024)  # Creates a file with 1024 random bytes

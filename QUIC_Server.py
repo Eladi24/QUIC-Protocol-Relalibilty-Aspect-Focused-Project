@@ -20,3 +20,4 @@ class Server:
         self.stream = None
         # 16-bit server ID
         self.server_id = IDGenerator().generate_id()
+
