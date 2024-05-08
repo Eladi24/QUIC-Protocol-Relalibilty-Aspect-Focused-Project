@@ -3,6 +3,7 @@ import ssl
 import os
 import uuid
 import hashlib
+from QUIC_Packet import QUICPacket, QUICFrame, QUICHeader
 
 """
 This class represents the QUIC API.
@@ -11,41 +12,16 @@ The class also includes the functions to handle packet loss and recovery mechani
 """
 
 
-class QUICPacket:
-    def __init__(self, packet_number, frames, long_header=None, short_header=None):
-        self.packet_number = packet_number
-        self.frames = frames
-        self.long_header = long_header
-        self.short_header = short_header
 
 
-class QUICLongHeader:
-    def __init__(self, version, packet_type, length, sequence_number, ack_number, data):
-        self.version = version
-        self.packet_type = packet_type
-        self.length = length
-        self.sequence_number = sequence_number
-        self.ack_number = ack_number
-        self.data = data
-
-
-class QUICShortHeader:
-    def __init__(self, packet_type, length, sequence_number):
-        self.packet_type = packet_type
-        self.length = length
-        self.sequence_number = sequence_number
-
-
-class QUICFrame:
-    def __init__(self, frame_type, data):
-        self.frame_type = frame_type
-        self.data = data
 
 """
 This class generates unique IDs for the clients and the servers.
 It generates a 16-bit ID for each client and server.
 Each ID is unique and is not used by any other client or server.
 """
+
+
 class IDGenerator:
     def __init__(self):
         self.used_ids = set()
@@ -58,16 +34,51 @@ class IDGenerator:
                 return new_id
 
 
-class QUIC_STREAM:
+class QUIC_Stream:
     # Singleton class to have only one active stream at a time.
     _stream = None
 
-    def __new__(cls, socket_fd, server_address, client_address, is_client: False, peer_id):
+    def __new__(cls, stream_id, connection, is_bidirectional=True):
         if cls._stream is None:
-            cls._stream = super(QUIC_STREAM, cls).__new__(cls)
-            cls._stream.protocol = None
-            cls._stream.stream_id = 0
+            cls._stream = super(QUIC_Stream, cls).__new__(cls)
+            cls._stream.stream_id = stream_id
+            cls._stream.connection = connection
+            cls._stream.is_bidirectional = is_bidirectional
+            cls._stream.send_buffer = []
+            cls._stream.receive_buffer = []
+            cls._stream.frame_offset = 0
         return cls._stream
+
+    def __init__(self, stream_id, connection, is_bidirectional=True):
+        self.stream_id = stream_id  # Unique identifier for the stream
+        self.connection = connection  # The connection this stream is part of
+        self.is_bidirectional = is_bidirectional  # Whether the stream is bidirectional or unidirectional
+        self.send_buffer = []  # Data to be sent
+        self.receive_buffer = []  # Data that has been received
+        self.frame_offset = 0  # Offset for data frame delivery ordering and loss detection
+
+    def send_data(self, data):
+        # Create a data frame with the current offset and add it to the send buffer
+        frame = (self.stream_id, self.frame_offset, data)
+        self.send_buffer.append(frame)
+        self.frame_offset += len(data)
+
+    def receive_data(self, frame):
+        # Process a received data frame (stream ID, offset, data)
+        stream_id, offset, data = frame
+        if stream_id == self.stream_id and offset == len(self.receive_buffer):
+            self.receive_buffer.append(data)
+
+    def retransmit_lost_frame(self, frame):
+        # Retransmit a lost frame
+        self.send_data(frame)
+
+    def close(self):
+        # Close the stream
+        pass
+
+
+class QUIC_Protocol:
 
     def __init__(self, socket_fd, server_address: None, client_address: None, is_client: False, peer_id):
         self.socket_fd = socket_fd
@@ -79,8 +90,6 @@ class QUIC_STREAM:
             self.QUIC_connect(server_address, client_address, peer_id)
         else:
             self.QUIC_accept_connection(peer_id)
-
-
 
     """
     This function establishes the connection with the server.
@@ -116,10 +125,6 @@ class QUIC_STREAM:
 
             # Perform a TLS 1.3 handshake to establish the shared secret
             self.tls_handshake_client()
-
-
-
-
 
     """
     This function accepts the connection from the client.
@@ -203,7 +208,6 @@ class QUIC_STREAM:
         if frame.data == self.path_challenge_payload:
             # Update the client address to the new address
             self.client_address = frame.address
-
 
     """
     This function closes the connection between the two peers.
@@ -304,11 +308,13 @@ class QUIC_STREAM:
         """
         with open(filename, 'wb') as f:
             f.write(os.urandom(size))
+
     """
     Generate a token for address validation. 
     This could be any data structure or value that the server can recognize when the client sends it back.
     For simplicity, we'll use a random 16-byte string.
     """
+
     def generate_token(self):
         return os.urandom(16)
 
