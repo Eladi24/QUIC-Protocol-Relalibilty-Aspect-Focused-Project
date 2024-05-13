@@ -18,6 +18,7 @@ class Server:
         self.server_address = server_address
         self.server_port = server_port
         self.stream = None
-        # 16-bit server ID
-        self.server_id = IDGenerator().generate_id()
+
+
+
 

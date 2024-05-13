@@ -4,59 +4,35 @@ The QUIC Packet is composed of a header long/short and frames.
 """
 import uuid
 from abc import ABC
+from ctypes import *
 
 
 # Since there are two types of headers, long and short, we will create an abstract class for the header.
-class QUICHeader(ABC):
-    def __init__(self):
-        pass
+class QUICHeader:
+    def __init__(self, header_form):
+        self.packet_number_generator = self.packet_number_generator()
+        # Header Form: identifies the type of the header (1 bit)
+        self.header_form = header_form
+        # Packet Number: The packet number
+        self.packet_number = next(self.packet_number_generator)
+
+    @staticmethod
+    def packet_number_generator():
+        packet_number = 0
+        while True:
+            yield packet_number
+            packet_number += 1
 
 
 class QUICLongHeader(QUICHeader):
-    def __init__(self, header_form, fixed_bit, long_packet_type, type_specific_bits, version_id, DCID_length, DCID,
-                 SCID_length, SCID):
-        super().__init__()
+    def __init__(self, header_form, long_packet_type, version_id):
+        super().__init__(header_form)
         # Header Form: identifies the type of the header (1 bit)
         self.header_form = header_form
-        # Fixed Bit: indicates if the packet is valid. If valid set to 0 (1 bit)
-        self.fixed_bit = fixed_bit
         # Long Packet Type (T): Indicates the type of long header packet (2 bits).
         self.long_packet_type = long_packet_type
-        # Type-Specific Bits (S): Bits specific for the long header packet type (4 bits).
-        self.type_specific_bits = type_specific_bits
         # Version ID: The version of the QUIC protocol (32 bits).
         self.version_id = version_id
-        # Destination Connection ID Length (DCIL): The length of the destination connection ID (8 bits).
-        self.DCID_length = DCID_length
-        # Destination Connection ID (DCID): The connection ID of the destination (0 - 160 bits).
-        self.DCID = DCID
-        # Source Connection ID Length (SCIL): The length of the source connection ID (8 bits).
-        self.SCID_length = SCID_length
-        # Source Connection ID (SCID): The connection ID of the source (0 - 160 bits).
-        self.SCID = SCID
-
-
-class QUICShortHeader(QUICHeader):
-    def __init__(self, header_form, fixed_bit, spin_bit, reserved, key_phase, p, DCID, packet_number,
-                 protected_payload):
-        super().__init__()
-        # Header Form: identifies the type of the header (1 bit)
-        self.header_form = header_form
-        # Fixed Bit: indicates if the packet is valid. If valid set to 0 (1 bit)
-        self.fixed_bit = fixed_bit
-        # Spin Bit: latency spin bit (1 bit)
-        self.spin_bit = spin_bit
-        # Reserved: reserved for future use (2 bits)
-        self.reserved = reserved
-        # Key Phase: identifies the packet protection key (1 bit)
-        self.key_phase = key_phase
-        # P: indicates the packet number length (2 bits)
-        self.p = p
-        # Destination Connection ID (DCID): The connection ID of the destination (0 - 160 bits)
-        self.DCID = DCID
-
-        # Protected Payload: The encrypted payload (0 - 1500 bytes)
-        self.protected_payload = protected_payload
 
 
 class QUICFrame(ABC):
@@ -86,7 +62,12 @@ class QUICAckFrame(QUICFrame):
 
 
 class QUICPacket:
-    def __init__(self, header, frames, packet_number):
+    def __init__(self, header, frames):
         self.header = header
         self.frames = frames
-        self.packet_number = packet_number
+
+    def __str__(self):
+        return f"Header: {self.header}, Frames: {self.frames}"
+
+    def get_packet_number(self):
+        return self.header.packet_number

@@ -1,6 +1,6 @@
 import os
 import uuid
-from QUIC_API import QUIC_API, IDGenerator
+from QUIC_API import QUIC_Protocol, IDGenerator
 
 
 class Client:
@@ -8,8 +8,7 @@ class Client:
         self.host = host
         self.port = port
         self.stream = None
-        # 16-bit client ID
-        self.client_id = IDGenerator().generate_id()
+
 
 
 
