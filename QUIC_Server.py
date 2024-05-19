@@ -49,4 +49,7 @@ quic_connection.QUIC_close_connection(False)
 serverSocket.close()
 # Calculate the time
 time_taken = end_time - start_time
+total_mb = total_bytes_sent / (1024 * 1024)
+total_bands = total_mb / time_taken
 print(f"Time taken to send the file: {time_taken} seconds")
+print(f"Total bandwidth: {total_bands} MB/s")

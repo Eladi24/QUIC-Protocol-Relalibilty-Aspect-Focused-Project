@@ -3,12 +3,12 @@ import ssl
 import os
 import uuid
 import hashlib
-
 import Utils
 from QUIC_Packet import *
 import pickle
 import time
 from Utils import *
+import threading
 
 """
 This project represents the QUIC protocol.
@@ -42,7 +42,14 @@ class QUIC_Protocol:
         # Create a map set of packet numbers as keys and the frames as values
         self.in_flight_packets = {}
         self.ack_ranges = []
-
+        # Stores the send times of each packet
+        self.packet_send_times = {}
+        # The estimated network RTT
+        self.smoothed_rtt = 0
+        # The variation in the RTT samples
+        self.latest_rtt = 0
+        # Timer for the Probe Timeout (PTO) period
+        self.pto_timer = None
     """
     This function establishes the connection with the server.
     It establishes the connection according to the QUIC protocol handshake focusing on the reliability aspect.
@@ -82,7 +89,8 @@ class QUIC_Protocol:
         if self.socket_fd.sendto(initial_packet, server_address) < 0:
             raise Exception("Error: The initial packet is not sent.")
         print("Connection request sent to the server, waiting for the response.")
-        # If the server is not connected, close the connection and throw an exception
+        # Set timeout for the socket if the response is not received
+        #self.socket_fd.settimeout(5.0)
 
         # Receive the initial response from the server
         initial_response, _ = self.socket_fd.recvfrom(2048)
@@ -233,7 +241,9 @@ class QUIC_Protocol:
             raise ValueError("Error: The data packet size is too large.")
 
         # Send the data packet to the receiver and start the timer
-        start_rtt = time.time()
+        send_time = time.time()
+        self.packet_send_times[data_packet.get_packet_number()] = send_time
+        # self.start_pto_timer(data_packet.get_packet_number(), receiver_address)
         bytes_sent = self.socket_fd.sendto(ser_paket, receiver_address)
         if bytes_sent < 0:
             raise Exception("Error: The data packet is not sent.")
@@ -245,10 +255,13 @@ class QUIC_Protocol:
         ack_packet = pickle.loads(ack_packet)
         # If the method returns true, the packet is lost and the recovery mechanism is initiated
         if not self.QUIC_detect_and_handle_loss(receiver_address, ack_packet, data_packet.get_packet_number()):
-            # Calculate the round-trip time
-            end_rtt = time.time()
-            rtt = end_rtt - start_rtt
-            print(f"Round-trip time: {rtt} seconds")
+            ack_time = time.time()
+            self.latest_rtt = ack_time - send_time
+            print(f"Round-trip time:{self.latest_rtt} seconds")
+            if self.smoothed_rtt == 0:
+                self.smoothed_rtt = self.latest_rtt
+            else:
+                self.smoothed_rtt = 7 / 8 * self.smoothed_rtt + 1 / 8 * self.latest_rtt
         print(f"Bytes sent: {bytes_sent}")
         return bytes_size_data
 
@@ -414,7 +427,14 @@ class QUIC_Protocol:
                                 return True
                             else:
                                 print("Packet loss recovery mechanism not initiated.")
-                                return False
+
+        time_threshold = 9 / 8 * max(self.smoothed_rtt, self.latest_rtt)
+        for packet_number, send_time in self.packet_send_times.items():
+            if time.time() - send_time > time_threshold:
+                print("Packet loss recovery mechanism initiated.")
+                packet_sent = self.QUIC_recovery(packet_number, receiver_address)
+                return True
+        return False
 
     """
     This function implements the recovery mechanism in case of packet loss and reordering in the network.
@@ -551,3 +571,15 @@ class QUIC_Protocol:
             return frames
         except Exception as e:
             print(f"Error: {e}")
+
+    def start_pto_timer(self, packet_number, receiver_address):
+        # Calculate the PTO period
+        pto_period = self.smoothed_rtt + 4 * self.latest_rtt
+        # Start the PTO timer
+        self.pto_timer = threading.Timer(pto_period, self.handle_pto_expiry, args=[packet_number, receiver_address])
+        self.pto_timer.start()
+
+    def handle_pto_expiry(self, packet_number, receiver_address):
+        print(f"PTO timer expired for packet number {packet_number}.")
+        # Resend the packet
+        self.QUIC_send_data(self.in_flight_packets[packet_number], receiver_address)
