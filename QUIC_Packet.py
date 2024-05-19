@@ -129,5 +129,7 @@ class QUICPacket:
     def __str__(self):
         return f"Header: {self.header}, Frames: {self.frames} Number: {self.header.packet_number}"
 
+    __repr__ = __str__
+
     def get_packet_number(self):
         return self.header.packet_number

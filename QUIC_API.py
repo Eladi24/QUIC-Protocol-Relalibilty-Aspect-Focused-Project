@@ -26,8 +26,10 @@ Each ID is unique and is not used by any other client or server.
 
 
 class QUIC_Protocol:
-    FRAME_SIZE = 1500
+    FRAME_SIZE = 65447  # Maximum frame size after subtracting protocol overhead
     PACKET_THRESHOLD = 3
+    # Time Threshold >= 1 packet AND time > 9/8 * max(SRTT, latest_RTT)
+
     MAX_UDP_SIZE = 65507
 
     def __init__(self, socket_fd, server_address, client_address=None):
@@ -36,6 +38,7 @@ class QUIC_Protocol:
         self.client_address = client_address
         self.packet_number_generator = QUICHeader.packet_number_generator()
         self.largest_acknowledged = 0
+        self.acked_packets = {}
         # Create a map set of packet numbers as keys and the frames as values
         self.in_flight_packets = {}
         self.ack_ranges = []
@@ -76,27 +79,28 @@ class QUIC_Protocol:
         # Serialize the initial packet with pickle
         initial_packet = pickle.dumps(initial_packet)
         # Send the initial packet to the server
-        if self.socket_fd.sendto(initial_packet, server_address) == -1:
+        if self.socket_fd.sendto(initial_packet, server_address) < 0:
             raise Exception("Error: The initial packet is not sent.")
         print("Connection request sent to the server, waiting for the response.")
+        # If the server is not connected, close the connection and throw an exception
+
         # Receive the initial response from the server
-        initial_response, server_address = self.socket_fd.recvfrom(2048)
+        initial_response, _ = self.socket_fd.recvfrom(2048)
         # If the server address is not set, set it to the server address
-        if self.server_address is None:
-            self.server_address = server_address
+
         # Deserialize the initial response with pickle
         initial_response = pickle.loads(initial_response)
         # Check if the frames contain the ack frame
         print(f"Initial response received from the server: {initial_response}")
-        self.largest_ack_update(initial_response)
+
         # Receive the handshake complete packet from the server
         handshake_complete_packet, server_address = self.socket_fd.recvfrom(2048)
         # Deserialize the handshake complete packet with pickle
         handshake_complete_packet = pickle.loads(handshake_complete_packet)
-        self.largest_ack_update(handshake_complete_packet)
+
         print(f"Handshake complete packet received from the server: {handshake_complete_packet}")
         # Send ack frame for the response packet
-        ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, 0)
+        ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, self.ack_ranges)
         long_header = QUICLongHeader("Long", "Initial", next(self.packet_number_generator))
         total_frames = [ack_frame]
         ack_packet = QUICPacket(long_header, total_frames)
@@ -106,7 +110,7 @@ class QUIC_Protocol:
             raise Exception("Error: The ack frame is not sent.")
         print("Ack frame sent for the response packet.")
         # Send ack frame for the handshake complete packet
-        ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, 0)
+        ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, self.ack_ranges)
         long_header = QUICLongHeader("Long", "Handshake", next(self.packet_number_generator))
         total_frames = [ack_frame]
         ack_packet = QUICPacket(long_header, total_frames)
@@ -149,7 +153,7 @@ class QUIC_Protocol:
         message = "Server Hello"
         # Create the frames for the response packet. Stream frame and ack frame
         stream_frame = QUICStreamFrame("Stream", message, len(message))
-        ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, 0)
+        ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, self.ack_ranges)
         total_frames = [stream_frame, ack_frame]
         response_packet = QUICPacket(long_header, total_frames)
         print(f"Response packet number: {response_packet.get_packet_number()}")
@@ -208,42 +212,45 @@ class QUIC_Protocol:
     int: The number of bytes sent if the data is sent successfully, 0 if the receiver disconnects, -1 otherwise. 
     """
 
-    def QUIC_send_data(self, data, receiver_address, size):
+    def QUIC_send_data(self, data, receiver_address):
+        bytes_sent = 0
         # Create short header for the data packet
         header = QUICHeader("Short", next(self.packet_number_generator))
         # Create the frame for the data packet
         frames = self.divide_into_frames(data, self.FRAME_SIZE)
         # Create ACK frame for the data packet
-        ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, 0)
+        ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, self.ack_ranges)
         total_frames = frames + [ack_frame]
         # Create the data packet
         data_packet = QUICPacket(header, total_frames)
         # Serialize the data packet with pickle
         ser_paket = pickle.dumps(data_packet)
-        print(f"The size of the data packet: {len(ser_paket)}")
-        if len(ser_paket) > self.MAX_UDP_SIZE:
+        # Check the size of the data packet
+        bytes_size_packet = Utils.calculate_bytes(ser_paket)
+        bytes_size_data = Utils.calculate_bytes(data)
+        print(f"Data size: {bytes_size_data}")
+        if bytes_size_packet > self.MAX_UDP_SIZE:
             raise ValueError("Error: The data packet size is too large.")
 
-        # A do while loop to make sure the data is sent and received
-        while True:
-            # Send the data packet to the receiver
-            bytes_sent = self.socket_fd.sendto(ser_paket, receiver_address)
-            if bytes_sent == -1:
-                raise Exception("Error: The data packet is not sent.")
-            print("Data packet sent to the receiver.")
-            # Receive the ack packet from the receiver
-            ack_packet, _ = self.socket_fd.recvfrom(self.MAX_UDP_SIZE)
-            # Deserialize the ack packet with pickle
-            ack_packet = pickle.loads(ack_packet)
-            print(f"Ack packet received from the receiver: {ack_packet}")
-            # Check if the ack packet is received
-            for frame in ack_packet.frames:
-                if frame.get_frame_type() == "Ack" and ack_packet.get_packet_number():
-                    print("Data received by the receiver.")
-                    return bytes_sent
-                else:
-                    print("Data not received by the receiver. Resending the data packet.")
-                    continue
+        # Send the data packet to the receiver and start the timer
+        start_rtt = time.time()
+        bytes_sent = self.socket_fd.sendto(ser_paket, receiver_address)
+        if bytes_sent < 0:
+            raise Exception("Error: The data packet is not sent.")
+        self.in_flight_packets[data_packet.get_packet_number()] = data_packet.frames
+        print(f"Data packet sent to the receiver: {data_packet.get_packet_number()}")
+        # Receive the ack packet from the receiver
+        ack_packet, _ = self.socket_fd.recvfrom(self.MAX_UDP_SIZE)
+        # Deserialize the ack packet with pickle
+        ack_packet = pickle.loads(ack_packet)
+        # If the method returns true, the packet is lost and the recovery mechanism is initiated
+        if not self.QUIC_detect_and_handle_loss(receiver_address, ack_packet, data_packet.get_packet_number()):
+            # Calculate the round-trip time
+            end_rtt = time.time()
+            rtt = end_rtt - start_rtt
+            print(f"Round-trip time: {rtt} seconds")
+        print(f"Bytes sent: {bytes_sent}")
+        return bytes_size_data
 
     """
     This function receives data from the sender. It receives the data and sends the acknowledgement to the sender.
@@ -256,37 +263,81 @@ class QUIC_Protocol:
         # Receive the packet from the sender
         packet, _ = self.socket_fd.recvfrom(self.MAX_UDP_SIZE)
         # Deserialize the packet with pickle
-        bytes_received = Utils.calculate_bytes(packet)
-        print(f"Bytes received: {bytes_received}")
-        packet = pickle.loads(packet)
+        bytes_received = 0
 
-        print(f"Packet received from the sender: {packet.get_packet_number}")
-        while True:
-            # Check if the packet is received
-            if packet:
-                # Send the ack packet to the sender
-                ack_frame = QUICAckFrame("Ack", packet.get_packet_number(), 0, 0)
-                short_header = QUICHeader("Short", next(self.packet_number_generator))
-                total_frames = [ack_frame]
-                ack_packet = QUICPacket(short_header, total_frames)
-                ack_packet = pickle.dumps(ack_packet)
-                if self.socket_fd.sendto(ack_packet, sender_address) == -1:
-                    raise Exception("Error: The ack packet is not sent.")
-                print("Ack packet sent to the sender.")
-                # Receive the data from the packet
-                frames_size = Utils.calculate_bytes(packet.frames)
-                print(f"Frames size {frames_size}")
-                # Add the data to the buffer according to the buffer size
-                count = 0
-                while count < buffer_size:
-                    for frame in packet.frames:
-                        if frame.get_frame_type() == "Stream":
-                            data_buffer.append(frame.data)
-                            count = count + frame.data_length
-                    print("Data added to the buffer.")
-                break
+        packet = pickle.loads(packet)
+        recv_number = packet.get_packet_number()
+        print(f"Packet received from the sender: {recv_number}")
+
+        # Check if the packet is received
+        if packet:
+            bytes_received = self.process_packet(packet, data_buffer, buffer_size, sender_address)
+            print(f"Bytes received: {bytes_received}")
         return bytes_received
 
+    def process_packet(self, packet, data_buffer, buffer_size, sender_address):
+        # Add the packet to the acked packets in the packet number index
+        data_bytes_received = 0
+        self.acked_packets[packet.get_packet_number()] = packet.frames
+        print("Process packet")
+
+        # Send the ack packet to the sender
+        self.largest_ack_update(packet)
+        ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, self.ack_ranges)
+        short_header = QUICHeader("Short", next(self.packet_number_generator))
+        total_frames = [ack_frame]
+        ack_packet = QUICPacket(short_header, total_frames)
+        ack_packet = pickle.dumps(ack_packet)
+        if self.socket_fd.sendto(ack_packet, sender_address) == -1:
+            raise Exception("Error: The ack packet is not sent.")
+        print("Ack packet sent to the sender.")
+
+        # Receive the data from the packet
+        frames_size = Utils.calculate_bytes(packet.frames)
+        print(f"Frames size {frames_size}")
+
+        # Add the data to the buffer according to the buffer size
+        for frame in packet.frames:
+            if frame.get_frame_type() == "Stream":
+                data_buffer.append(frame.data)
+                data_bytes_received += frame.data_length
+        print("Data added to the buffer.")
+        return data_bytes_received
+
+    def update_ack_ranges(self, packet_number):
+        # If ack_ranges is empty, add the first range
+        if not self.ack_ranges:
+            self.ack_ranges.append(AckRange(0, (packet_number, packet_number)))
+        else:
+            # Check if the packet number fits into an existing range
+            for i, ack_range in enumerate(self.ack_ranges):
+                start, end = ack_range.ack_range
+                if start <= packet_number <= end:
+                    # The packet number is already in a range, no need to update
+                    return
+                elif packet_number == end + 1:
+                    # The packet number extends the range by 1
+                    ack_range.ack_range = (start, packet_number)
+                    return
+                elif packet_number == start - 1:
+                    # The packet number extends the range by 1 at the start
+                    ack_range.ack_range = (packet_number, end)
+                    return
+                elif packet_number > end + 1:
+                    # Calculate the gap between the end of the range and the packet number
+                    gap = packet_number - 1 - end - 1
+                    # Create a new range with the gap
+                    self.ack_ranges.insert(i + 1, AckRange(gap, (packet_number, packet_number)))
+                    return
+                elif packet_number < start - 1:
+                    # Calculate the gap between the start of the range and the packet number
+                    gap = start - 1 - packet_number - 1
+                    # Create a new range with the gap
+                    self.ack_ranges.insert(i, AckRange(gap, (packet_number, packet_number)))
+                    return
+
+            # If the packet number doesn't fit into any existing range, create a new range
+            self.ack_ranges.append(AckRange(0, (packet_number, packet_number)))
 
     """
     This function closes the connection between the two peers.
@@ -318,35 +369,52 @@ class QUIC_Protocol:
             response_packet = pickle.loads(response_packet)
             # Check if the ack packet is received
             for frame in response_packet.frames:
-                if frame.get_frame_type() == "Ack" and response_packet.get_packet_number():
+                if frame.get_frame_type() == "Ack":
                     print(f"Response received from the server")
-                    close(self.socket_fd)
 
-                # Server case
-                else:
-                    client_close_packet, _ = self.socket_fd.recvfrom(self.MAX_UDP_SIZE)
-                    client_close_packet = pickle.loads(client_close_packet)
-                    print("Client close packet received.")
-                    # Send the response packet to the client
-                    long_header = QUICLongHeader("Long", "Close", next(self.packet_number_generator))
-                    ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, 0)
-                    stream_frame = QUICStreamFrame("Stream", "Server Close", len("Server Close"))
-                    total_frames = [ack_frame, stream_frame]
-                    response_packet = QUICPacket(long_header, total_frames)
-                    response_packet = pickle.dumps(response_packet)
-                    if self.socket_fd.sendto(response_packet, self.client_address) == -1:
-                        raise Exception("Error: The response packet is not sent.")
-                    print("Response packet sent to the client.")
-                    close(self.socket_fd)
 
+        # Server case
+        else:
+            client_close_packet, _ = self.socket_fd.recvfrom(self.MAX_UDP_SIZE)
+            client_close_packet = pickle.loads(client_close_packet)
+            print("Client close packet received.")
+            # Send the response packet to the client
+            long_header = QUICLongHeader("Long", "Close", next(self.packet_number_generator))
+            ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, 0)
+            stream_frame = QUICStreamFrame("Stream", "Server Close", len("Server Close"))
+            total_frames = [ack_frame, stream_frame]
+            response_packet = QUICPacket(long_header, total_frames)
+            response_packet = pickle.dumps(response_packet)
+            if self.socket_fd.sendto(response_packet, self.client_address) == -1:
+                raise Exception("Error: The response packet is not sent.")
+            print("Response packet sent to the client.")
 
     """
     This function handles the packet loss in the network.
     
     """
 
-    def QUIC_handle_packet_loss(self):
-        pass
+    def QUIC_detect_and_handle_loss(self, receiver_address, ack_packet, date_packet_number):
+        for frame in ack_packet.frames:
+            if frame.get_frame_type() == "Ack":
+                if frame.largest_acknowledged == date_packet_number:
+                    print("Ack received for the data packet.")
+                    # Remove the packet from the in-flight packets
+                    self.in_flight_packets.pop(date_packet_number)
+                    return False
+                elif frame.largest_acknowledged > date_packet_number:
+                    print("Packet loss detected.")
+                    # Find the previous range of the largest acknowledged and compare the gap with the threshold
+                    for ack_range in self.ack_ranges:
+                        start, end = ack_range.ack_range
+                        if start <= frame.largest_acknowledged <= end:
+                            if ack_range.gap >= self.PACKET_THRESHOLD:
+                                print("Packet loss recovery mechanism initiated.")
+                                packet_sent = self.QUIC_recovery(frame.largest_acknowledged, receiver_address)
+                                return True
+                            else:
+                                print("Packet loss recovery mechanism not initiated.")
+                                return False
 
     """
     This function implements the recovery mechanism in case of packet loss and reordering in the network.
@@ -361,9 +429,30 @@ class QUIC_Protocol:
     
     """
 
-    def QUIC_recovery(self):
+    def QUIC_recovery(self, largest_acknowledged, receiver_address):
+        total_bytes = 0
+        packet_count = 0
         for packet_number, frames in self.in_flight_packets.items():
-            pass
+            if largest_acknowledged - self.PACKET_THRESHOLD > packet_number:
+                packet_count += 1
+                print(f"Packet number {packet_number} is lost.")
+                # Get the frames of the lost packet and create a packet with a new packet number
+                header = QUICHeader("Short", next(self.packet_number_generator))
+                lost_packet = QUICPacket(header, frames)
+                # Serialize the lost packet with pickle
+                lost_packet = pickle.dumps(lost_packet)
+                # Get the size of the lost packet in bytes
+                lost_packet_size = Utils.calculate_bytes(lost_packet)
+                # Send the lost packet to the receiver
+                if self.socket_fd.sendto(lost_packet, receiver_address) < 0:
+                    raise Exception("Error: The lost packet is not sent.")
+                print(f"Lost packet {packet_number} sent to the receiver.")
+                total_bytes += lost_packet_size
+                # Remove the old packet from the in-flight packets and add the new packet
+                self.in_flight_packets.pop(packet_number)
+                self.in_flight_packets[header.packet_number] = frames
+        print(f"Total bytes sent for the lost packets: {total_bytes}")
+        return packet_count
 
     """
     This function generates a connection ID (CID).
@@ -386,13 +475,16 @@ class QUIC_Protocol:
         return connection_id
 
     def largest_ack_update(self, packet):
-        frames = packet.frames
-        for frame in frames:
-            if frame.get_frame_type() == "Ack" and frame.largest_acknowledged > self.largest_acknowledged:
-                self.largest_acknowledged = frame.largest_acknowledged
-                self.ack_received.append(frame.largest_acknowledged)
-                print(f"Largest Acknowledged: {self.largest_acknowledged}")
-                print(f"Acknowledgements Received: {self.ack_received}")
+        if packet.get_packet_number() == self.largest_acknowledged + 1:
+            self.largest_acknowledged = packet.get_packet_number()
+
+            return True
+        elif packet.get_packet_number() > self.largest_acknowledged + 1:
+            self.largest_acknowledged = packet.get_packet_number()
+            print("Packet out of order.")
+            return False
+        else:
+            return False
 
     def request_file_handshake(self):
         message = "Request a file"
@@ -444,8 +536,9 @@ class QUIC_Protocol:
     def divide_into_frames(self, data, frame_size):
         try:
             # Calculate the number of frames
-            num_frames = len(data) // frame_size
-            if len(data) % frame_size != 0:
+            data_bytes_size = Utils.calculate_bytes(data)
+            num_frames = data_bytes_size // frame_size
+            if data_bytes_size % frame_size != 0:
                 num_frames += 1  # Add one more frame if there's leftover data
 
             # Create the frames
@@ -453,9 +546,8 @@ class QUIC_Protocol:
             for i in range(num_frames):
                 start = i * frame_size
                 end = start + frame_size
-                frame = QUICStreamFrame("Stream", data[start:end], len(data[start:end]))
+                frame = QUICStreamFrame("Stream", data[start:end], Utils.calculate_bytes(data[start:end]))
                 frames.append(frame)
             return frames
         except Exception as e:
             print(f"Error: {e}")
-

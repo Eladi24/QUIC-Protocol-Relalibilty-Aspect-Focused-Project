@@ -1,15 +1,16 @@
 from socket import *
-
+import time
 import Utils
 from QUIC_API import *
 
 # Description: This file contains the QUIC server class.
 # This class is representing the QUIC server.
-
+# Gap 40960 bytes of 10MB file. Gap 8192 bytes of 2MB file.
+# A gap of 25/64% loss rate.
 # A buffer to store the file content (50,000 kilobytes)
-BUFFER_SIZE = 50*1024
+BUFFER_SIZE = 60 * 1024
 # Size of the file is 10MB
-FILE_SIZE = 10*1024*1024
+FILE_SIZE = 10 * 1024 * 1024
 # Create the random file
 Utils.generate_random_file('10MB_file.bin', FILE_SIZE)
 # The server address
@@ -28,29 +29,24 @@ while True:
     bytes_received = 0
     total_bytes_sent = 0
     message_buffer = []
+
     # Read the file to buffer
-    while total_bytes_sent < FILE_SIZE:
-        with open('10MB_file.bin', 'rb') as f:
-            f.seek(bytes_sent)
+    # Start counting the time
+    start_time = time.time()
+    with open('10MB_file.bin', 'rb') as f:
+        while True:
             data = f.read(BUFFER_SIZE)
-            bytes_sent = quic_connection.QUIC_send_data(data, quic_connection.client_address, BUFFER_SIZE)
-            total_bytes_sent += len(data)
-            print(f"Sent {len(data)} bytes")
+            if not data:
+                break
+            bytes_sent = quic_connection.QUIC_send_data(data, quic_connection.client_address)
+            total_bytes_sent += bytes_sent
     print(f"Total bytes sent: {total_bytes_sent}")
-    # Receive the message from the client and store it
-    bytes_received += quic_connection.QUIC_receive_data(message_buffer, BUFFER_SIZE, quic_connection.client_address)
-    # If the message is goodbye, then break the loop
-    for message in message_buffer:
-        if message == "Goodbye":
-            break
-quiconnection.QUIC_close_connection(False)
-
-
-
-
-
-
-
-
-
-
+    if total_bytes_sent >= FILE_SIZE:
+        print("File sent successfully")
+    end_time = time.time()
+    break
+quic_connection.QUIC_close_connection(False)
+serverSocket.close()
+# Calculate the time
+time_taken = end_time - start_time
+print(f"Time taken to send the file: {time_taken} seconds")
