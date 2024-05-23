@@ -1,3 +1,4 @@
+import struct
 from socket import *
 import time
 import Utils
@@ -11,14 +12,21 @@ from QUIC_API import *
 BUFFER_SIZE = 60 * 1024
 # Size of the file is 10MB
 FILE_SIZE = 10 * 1024 * 1024
+MAX_TIME_WAIT = 1
+timeout_microseconds = 0
+
+# Convert the timeout to the required structure
+timeout = MAX_TIME_WAIT + timeout_microseconds / 1_000_000
 # Create the random file
 Utils.generate_random_file('10MB_file.bin', FILE_SIZE)
 # The server address
 serverPort = 12000
 SERVER_ADDRESS = ('', serverPort)
 # Create a UDP socket
-serverSocket = socket(AF_INET, SOCK_DGRAM)
+serverSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
 serverSocket.bind(SERVER_ADDRESS)
+# Set the socket option to set the maximum wait time for the recvfrom(2) call.
+serverSocket.setsockopt(SOL_SOCKET, SO_RCVTIMEO, struct.pack('ll', int(MAX_TIME_WAIT), int(timeout_microseconds)))
 print("Waiting for QUIC connection request from the client...")
 quic_connection = QUIC_Protocol(serverSocket, SERVER_ADDRESS)
 quic_connection.QUIC_accept_connection()

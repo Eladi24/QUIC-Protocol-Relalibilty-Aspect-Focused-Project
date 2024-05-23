@@ -20,3 +20,5 @@ def generate_random_file(filename, size):
 
 def calculate_bytes(obj):
     return sys.getsizeof(pickle.dumps(obj))
+
+

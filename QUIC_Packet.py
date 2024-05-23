@@ -17,6 +17,9 @@ class QUICHeader:
         # Packet Number: The packet number
         self.packet_number = packet_number
 
+    def get_packet_number(self):
+        return self.packet_number
+
     def __getstate__(self):
         # Convert the object to a dictionary
         state = self.__dict__.copy()
@@ -102,6 +105,15 @@ class AckRange:
     def __init__(self, gap, ack_range):
         self.gap = gap
         self.ack_range = ack_range
+
+    def __getstate__(self):
+        # Convert the object to a dictionary
+        state = self.__dict__.copy()
+        return state
+
+    def __setstate__(self, state):
+        # Restore the object's state from the dictionary
+        self.__dict__.update(state)
 
 
 class QUICPacket:
