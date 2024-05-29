@@ -7,13 +7,15 @@ import time
 
 class TestQUICFileTransfer(unittest.TestCase):
     def test_file_transfer(self):
+        serverName = 'localhost'
+        serverPort = 12000
         # Instantiate actual ServerQUIC and ClientQUIC objects
-        server_quic = QUIC_Server()
-        client_quic = QUIC_Client()
+        server_quic = QUIC_Server(serverPort)
+        client_quic = QUIC_Client(serverName, serverPort)
 
         # Run the server in a separate thread
         # Run the server
-        server_quic = QUIC_Server()  # Instantiate the ser
+        server_quic.start_server()
 
         server_thread = threading.Thread(target=server_quic.start_server())# Start the server operation
         server_thread.start()
