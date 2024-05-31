@@ -1,0 +1,9 @@
+To create a packet loss scenario, type the following command: 
+sudo tc qdisc add dev lo root netem loss xx%
+
+After creating a packet loss scenario, you can change the percentage by typing the
+following command:
+sudo tc qdisc change dev lo root netem loss xx%
+
+To remove the packet loss scenario, write the following command:
+sudo tc qdisc del dev lo root netem
