@@ -64,7 +64,7 @@ class QUIC_Client:
             if self.total_bytes_received >= FILE_SIZE:
                 print("File received successfully")
 
-            break
+                break
         self.close_connection()
 
     def close_connection(self):

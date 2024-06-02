@@ -97,7 +97,8 @@ class QUIC_Protocol:
         if self.socket_fd.sendto(initial_packet, server_address) < 0:
             raise Exception("Error: The initial packet is not sent.")
         send_time = time.time()
-        self.packet_send_times[long_header.get_packet_number()] = send_time
+        # self.packet_send_times[long_header.get_packet_number()] = send_time
+        self.in_flight_packets[long_header.get_packet_number()] = (total_frames, send_time)
         with self.lock:
             self.start_pto_timer(long_header.get_packet_number())
         print("Connection request sent to the server, waiting for the response.")
@@ -118,10 +119,11 @@ class QUIC_Protocol:
         initial_response = pickle.loads(initial_response)
         # Check if the frames contain the ack frame
         print(f"Initial response received from the server: {initial_response.get_packet_number()}")
-        self.QUIC_detect_loss(server_address, initial_response, initial_response.get_packet_number(), send_time)
-        self.QUIC_detect_and_handle_loss_time(server_address)
         self.largest_ack_update(initial_response)
         self.update_ack_ranges(initial_response.get_packet_number())
+        self.QUIC_detect_loss(server_address, initial_response, long_header.packet_number, send_time)
+        self.QUIC_detect_and_handle_loss_time(server_address)
+
         # Receive the handshake complete packet from the server
         handshake_complete_packet = None
         while True:
@@ -145,7 +147,7 @@ class QUIC_Protocol:
         long_header = QUICLongHeader("Long", "Initial", next(self.packet_number_generator))
         total_frames = [ack_frame]
         ack_packet = QUICPacket(long_header, total_frames)
-        print(f"Ack packet number: {ack_packet.get_packet_number()}")
+        # print(f"Ack packet number: {ack_packet.get_packet_number()}")
         ack_packet = pickle.dumps(ack_packet)
         if self.socket_fd.sendto(ack_packet, server_address) == -1:
             raise Exception("Error: The ack frame is not sent.")
@@ -208,6 +210,7 @@ class QUIC_Protocol:
         ack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, self.ack_ranges)
         total_frames = [stream_frame, ack_frame]
         response_packet = QUICPacket(long_header, total_frames)
+        response_packet_number = long_header.packet_number
         print(f"Response packet number: {response_packet.get_packet_number()}")
         # Serialize the response packet with pickle
         response_packet = pickle.dumps(response_packet)
@@ -216,7 +219,8 @@ class QUIC_Protocol:
             raise Exception("Error: The response packet is not sent.")
         print("Response packet sent to the client.")
         send_time = time.time()
-        self.packet_send_times[long_header.get_packet_number()] = send_time
+        # self.packet_send_times[long_header.get_packet_number()] = send_time
+        self.in_flight_packets[long_header.get_packet_number()] = (total_frames, send_time)
         with self.lock:
             self.start_pto_timer(long_header.get_packet_number())
         # Create the long header for the handshake complete packet
@@ -228,7 +232,7 @@ class QUIC_Protocol:
         total_frames = [stream_frame]
         # Create the packet for the handshake complete packet
         handshake_complete_packet = QUICPacket(long_header, total_frames)
-
+        handshake_complete_packet_number = long_header.packet_number
         # Serialize the handshake complete packet with pickle
         handshake_complete_packet = pickle.dumps(handshake_complete_packet)
         # Send the handshake complete packet to the client
@@ -236,7 +240,8 @@ class QUIC_Protocol:
             raise Exception("Error: The handshake complete packet is not sent.")
         print("Handshake complete packet sent to the client.")
         send_complete_time = time.time()
-        self.packet_send_times[long_header.get_packet_number()] = send_complete_time
+        # self.packet_send_times[long_header.get_packet_number()] = send_complete_time
+        self.in_flight_packets[long_header.get_packet_number()] = (total_frames, send_complete_time)
         with self.lock:
             self.start_pto_timer(long_header.get_packet_number())
         # Receive the ack frame for the response packet
@@ -250,10 +255,11 @@ class QUIC_Protocol:
                 continue
         # Deserialize the ack packet with pickle
         ack_packet = pickle.loads(ack_packet)
-        self.QUIC_detect_loss(client_address, ack_packet, ack_packet.get_packet_number(), send_time)
-        self.QUIC_detect_and_handle_loss_time(client_address)
         self.largest_ack_update(ack_packet)
         self.update_ack_ranges(ack_packet.get_packet_number())
+        self.QUIC_detect_loss(client_address, ack_packet, response_packet_number, send_time)
+        self.QUIC_detect_and_handle_loss_time(client_address)
+
         print(f"Ack frame received for the response packet: {ack_packet.get_packet_number()}")
         # Receive the ack frame for the handshake complete packet
         ack_packet = None
@@ -267,10 +273,11 @@ class QUIC_Protocol:
 
         # Deserialize the ack packet with pickle
         ack_packet = pickle.loads(ack_packet)
-        self.QUIC_detect_loss(client_address, ack_packet, ack_packet.get_packet_number(), send_complete_time)
-        self.QUIC_detect_and_handle_loss_time(client_address)
         self.largest_ack_update(ack_packet)
         self.update_ack_ranges(ack_packet.get_packet_number())
+        self.QUIC_detect_loss(client_address, ack_packet, handshake_complete_packet_number, send_complete_time)
+        self.QUIC_detect_and_handle_loss_time(client_address)
+
         print(f"Ack frame received for the handshake complete packet: {ack_packet.get_packet_number()}")
         # If the handshake complete packet is received, the connection is established
         print(f"Connection established with the client: {client_address}")
@@ -347,11 +354,11 @@ class QUIC_Protocol:
         ack_packet = pickle.loads(ack_packet)
         # If the method returns true, the packet is lost and the recovery mechanism is initiated
         # with self.lock:
-        self.QUIC_detect_loss(receiver_address, ack_packet, data_packet.get_packet_number(), send_time)
-        self.QUIC_detect_and_handle_loss_time(receiver_address)
         self.largest_ack_update(ack_packet)
         self.update_ack_ranges(data_packet.get_packet_number())
 
+        self.QUIC_detect_loss(receiver_address, ack_packet, data_packet.get_packet_number(), send_time)
+        self.QUIC_detect_and_handle_loss_time(receiver_address)
         return bytes_size_data
 
     """
@@ -482,13 +489,15 @@ class QUIC_Protocol:
             total_frames = [stream_frame]
             # Create the packet for the close packet
             close_packet = QUICPacket(long_header, total_frames)
+            close_packet_number = long_header.packet_number
             # Serialize the close packet with pickle
             close_packet = pickle.dumps(close_packet)
             # Send the close packet to the server
             if self.socket_fd.sendto(close_packet, self.server_address) == -1:
                 raise Exception("Error: The close packet is not sent.")
             send_time = time.time()
-            self.packet_send_times[long_header.get_packet_number()] = send_time
+            # self.packet_send_times[long_header.get_packet_number()] = send_time
+            self.in_flight_packets[long_header.get_packet_number()] = (total_frames, send_time)
             with self.lock:
                 self.start_pto_timer(long_header.get_packet_number())
             print("Close packet sent to the server.")
@@ -505,11 +514,15 @@ class QUIC_Protocol:
 
             # Deserialize the response with pickle
             response_packet = pickle.loads(response_packet)
+            if response_packet.header.header_form != "Long":
+
+                time.sleep(2)
             # Check if the ack packet is received
-            self.QUIC_detect_loss(self.server_address, response_packet, response_packet.get_packet_number(), send_time)
-            self.QUIC_detect_and_handle_loss_time(self.server_address)
             self.largest_ack_update(response_packet)
             self.update_ack_ranges(response_packet.get_packet_number())
+            self.QUIC_detect_loss(self.server_address, response_packet, close_packet_number, send_time)
+            self.QUIC_detect_and_handle_loss_time(self.server_address)
+
             print("Response packet received from the server, closing the connection...")
 
         # Server case
@@ -562,12 +575,13 @@ class QUIC_Protocol:
         packets_to_recovery = []
         for frame in ack_packet.frames:
             if frame.get_frame_type() == "Ack":
-                if frame.largest_acknowledged == date_packet_number:
-                    print("Ack received for the data packet.")
+                if frame.largest_acknowledged == date_packet_number + 1:
+                    # print("Ack received for the data packet.")
 
                     return False
-                elif frame.largest_acknowledged > date_packet_number:
+                elif frame.largest_acknowledged > date_packet_number + 1:
                     print("Packet loss detected.")
+                    print(f"Largest acknowledged: {frame.largest_acknowledged} vs. Data packet number: {date_packet_number}")
                     # Find the previous range of the largest acknowledged and compare the gap with the threshold
 
                     for ack_range in self.ack_ranges:
@@ -586,7 +600,7 @@ class QUIC_Protocol:
         return False
 
     def QUIC_detect_and_handle_loss_time(self, receiver_address):
-        print("Detect and handle loss time function")
+        # print("Detect and handle loss time function")
         packets_to_recovery = []
         time_threshold = self.calculate_time_threshold()
         current_time_value = time.time()
@@ -681,6 +695,7 @@ class QUIC_Protocol:
         total_frames = [stream_frame]
         # Create the packet for the request packet
         request_packet = QUICPacket(long_header, total_frames)
+        request_packet_number = long_header.packet_number
         # Serialize the request packet with pickle
         request_packet = pickle.dumps(request_packet)
         # Send the request packet to the server
@@ -688,7 +703,10 @@ class QUIC_Protocol:
             raise Exception("Error: The request packet is not sent.")
         print("Request packet sent to the server.")
         send_time = time.time()
-        self.packet_send_times[long_header.get_packet_number()] = send_time
+        # self.packet_send_times[long_header.get_packet_number()] = send_time
+        self.in_flight_packets[long_header.get_packet_number()] = (total_frames, send_time)
+        with self.lock:
+            self.start_pto_timer(long_header.get_packet_number())
         # Receive the response from the server
         response_packet = None
         while True:
@@ -701,10 +719,12 @@ class QUIC_Protocol:
 
         # Deserialize the response with pickle
         response_packet = pickle.loads(response_packet)
-        self.QUIC_detect_loss(self.server_address, response_packet, response_packet.get_packet_number(), send_time)
-        self.QUIC_detect_and_handle_loss_time(self.server_address)
         self.largest_ack_update(response_packet)
         self.update_ack_ranges(response_packet.get_packet_number())
+
+        self.QUIC_detect_loss(self.server_address, response_packet, request_packet_number, send_time)
+        self.QUIC_detect_and_handle_loss_time(self.server_address)
+
         # Check if the ack packet is received
         for frame in response_packet.frames:
             if frame.get_frame_type() == "Ack" and response_packet.get_packet_number():
