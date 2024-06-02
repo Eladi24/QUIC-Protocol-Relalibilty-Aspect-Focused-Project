@@ -161,6 +161,7 @@ class QUIC_Protocol:
             raise Exception("Error: The ack frame is not sent.")
         # If the handshake complete packet is received, the connection is established
         print(f"Connection established with the server: {server_address}")
+        return True
         # Reset the largest acknowledged
 
     """
@@ -253,7 +254,7 @@ class QUIC_Protocol:
         self.QUIC_detect_and_handle_loss_time(client_address)
         self.largest_ack_update(ack_packet)
         self.update_ack_ranges(ack_packet.get_packet_number())
-        print(f"Ack frame received for the response packet: {ack_packet}")
+        print(f"Ack frame received for the response packet: {ack_packet.get_packet_number()}")
         # Receive the ack frame for the handshake complete packet
         ack_packet = None
         while True:
@@ -270,7 +271,7 @@ class QUIC_Protocol:
         self.QUIC_detect_and_handle_loss_time(client_address)
         self.largest_ack_update(ack_packet)
         self.update_ack_ranges(ack_packet.get_packet_number())
-        print(f"Ack frame received for the handshake complete packet: {ack_packet}")
+        print(f"Ack frame received for the handshake complete packet: {ack_packet.get_packet_number()}")
         # If the handshake complete packet is received, the connection is established
         print(f"Connection established with the client: {client_address}")
         return client_address
@@ -370,15 +371,7 @@ class QUIC_Protocol:
                 packet, _ = self.socket_fd.recvfrom(self.MAX_UDP_SIZE)
                 break  # Exit the loop if something is received
             except BlockingIOError:
-                # Send the Nack packet to the sender
-                # nack_frame = QUICAckFrame("Ack", self.largest_acknowledged, 0, self.ack_ranges)
-                # stream_frame = QUICStreamFrame("Stream", "Nack", Utils.calculate_bytes("Nack"))
-                # short_header = QUICHeader("Short", next(self.packet_number_generator))
-                # total_frames = [nack_frame]
-                # nack_packet = QUICPacket(short_header, total_frames)
-                # nack_packet = pickle.dumps(nack_packet)
-                # if self.socket_fd.sendto(nack_packet, sender_address) < 0:
-                #     raise Exception("Error: The ack packet is not sent.")
+
                 print("Error: The packet is not received.")
                 continue  # Retry receiving if a temporary resource unavailability occurs
 
@@ -519,8 +512,6 @@ class QUIC_Protocol:
             self.update_ack_ranges(response_packet.get_packet_number())
             print("Response packet received from the server, closing the connection...")
 
-
-
         # Server case
         else:
             # Receive the client close packet
@@ -546,6 +537,7 @@ class QUIC_Protocol:
             if self.socket_fd.sendto(response_packet, self.client_address) == -1:
                 raise Exception("Error: The response packet is not sent.")
             print("Response packet sent to the client, closing the connection...")
+        return True
 
     """
     This function handles the packet loss in the network.
@@ -716,7 +708,7 @@ class QUIC_Protocol:
         # Check if the ack packet is received
         for frame in response_packet.frames:
             if frame.get_frame_type() == "Ack" and response_packet.get_packet_number():
-                print(f"Response received from the server: {response_packet}")
+                print(f"Response received from the server: {response_packet.get_packet_number()}")
                 return True
             else:
                 raise Exception("Error: The response packet is not received.")
