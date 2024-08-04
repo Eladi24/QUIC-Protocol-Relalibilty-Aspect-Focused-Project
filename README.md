@@ -1,6 +1,3 @@
-Here's a draft for your Git repository README based on the information provided:
-
----
 
 # QUIC Protocol Implementation
 
